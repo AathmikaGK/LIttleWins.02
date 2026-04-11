@@ -155,14 +155,10 @@ async function signup(event) {
       auth: false
     });
 
-    if (payload.access_token || payload.session?.access_token) {
-      setSession(payload.session || payload);
-      await init();
-      return;
-    }
-
     showAuthTab("login");
-    setAuthMessage("Account created. Log in now.");
+    setAuthMessage(payload.needsConfirmation
+      ? "Account created. Confirm your email, then log in."
+      : "Account created. Log in now.");
   } catch (error) {
     setAuthMessage(error.message);
   }
@@ -244,8 +240,7 @@ function renderGoals() {
     });
   });
 
-  const totalSaved = state.goals.reduce((total, goal) => total + Number(goal.saved || 0), 0);
-  elements.totalSaved.textContent = formatMoney(totalSaved);
+  renderTotalSaved();
 }
 
 function renderQuests() {
@@ -261,6 +256,7 @@ function renderQuests() {
   const progress = Math.round((completed / total) * 100);
   elements.questProgressLabel.textContent = `${completed} / ${total} Quests`;
   elements.questProgressBar.style.setProperty("--progress", `${progress}%`);
+  renderTotalSaved();
 }
 
 function questCard(goal, index, weekly) {
@@ -271,6 +267,12 @@ function questCard(goal, index, weekly) {
   const icon = iconForCategory(category);
   const checked = goal.completion ? "checked" : "";
   const disabled = goal.id ? "" : "disabled";
+  const progressLabel = weekly
+    ? `${goal.completion ? 1 : 0} / 7 Days`
+    : goal.completion ? "1 / 1" : "0 / 1";
+  const progressValue = weekly
+    ? `${goal.completion ? Math.round((1 / 7) * 100) : 0}%`
+    : goal.completion ? "100%" : "0%";
 
   return `
     <article class="quest-card ${goal.completion ? "complete" : ""}">
@@ -287,12 +289,12 @@ function questCard(goal, index, weekly) {
       <p class="muted">${escapeHtml(reason)}</p>
       <div class="progress-copy">
         <span>${weekly ? "Current Streak" : "Progress"}</span>
-        <span>${goal.completion ? "Complete" : weekly ? "0 / 7 Days" : "0 / 1"}</span>
+        <span>${progressLabel}</span>
       </div>
-      <div class="progress-track" style="--progress:${goal.completion ? "100%" : "0%"}"><span></span></div>
+      <div class="progress-track" style="--progress:${progressValue}"><span></span></div>
       <label class="quest-completion">
         <input type="checkbox" data-quest-id="${escapeHtml(goal.id || "")}" ${checked} ${disabled}>
-        <span>${goal.completion ? "Completed" : "Mark complete"}</span>
+        <span>Done?</span>
       </label>
     </article>
   `;
@@ -315,6 +317,7 @@ function bindQuestCompletionEvents() {
         if (!response.ok) throw new Error(payload.error || "Could not update quest");
         updateLocalQuestCompletion(questId, Boolean(payload.quest?.completion));
         renderQuests();
+        renderTotalSaved();
       } catch (error) {
         checkbox.checked = !checkbox.checked;
         setAnalysisStatus(error.message);
@@ -332,8 +335,19 @@ function updateLocalQuestCompletion(questId, completion) {
   }
 }
 
+function renderTotalSaved() {
+  const goalSavings = state.goals.reduce((total, goal) => total + Number(goal.saved || 0), 0);
+  const completedQuestSavings = ["daily goals", "weekly goals"].reduce((total, group) => {
+    const quests = asArray(state.analysis?.[group], []);
+    return total + quests
+      .filter((quest) => quest.completion)
+      .reduce((sum, quest) => sum + Number(quest.saving || 0), 0);
+  }, 0);
+  elements.totalSaved.textContent = formatMoney(goalSavings + completedQuestSavings);
+}
+
 async function analyseSpending() {
-  setAnalysisStatus("Fetching transactions and asking OpenAI for JSON analysis...");
+  setAnalyseLoading(true);
   elements.analyseButton.disabled = true;
 
   try {
@@ -358,27 +372,77 @@ async function analyseSpending() {
     setAnalysisStatus(error.message);
   } finally {
     elements.analyseButton.disabled = false;
+    setAnalyseLoading(false);
+  }
+}
+
+function setAnalyseLoading(isLoading) {
+  elements.analyseButton.classList.toggle("loading", isLoading);
+  elements.analyseButton.innerHTML = isLoading
+    ? `<span class="button-spinner" aria-hidden="true"></span><span>Analysing...</span>`
+    : "Analyse";
+
+  if (isLoading) {
+    elements.analysisOutput.innerHTML = `
+      <article class="analysis-card loading-card" aria-live="polite">
+        <div class="loading-orbit" aria-hidden="true">
+          <span></span>
+        </div>
+        <div>
+          <p class="eyebrow">AI Coach</p>
+          <h3>Reading your spending rhythm</h3>
+          <p class="muted">Checking transactions, spotting flexible spending, and building quests that help your savings grow.</p>
+        </div>
+        <div class="loading-steps" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+      </article>
+    `;
   }
 }
 
 function renderAnalysis(payload) {
   const excessive = payload.analysis?.["excessive spending"] || {};
   const categories = asArray(excessive.categories, []);
+  const categoryNames = categories.map((item) => item.category).filter(Boolean);
+  const positiveMessage = buildPositiveSpendingMessage(categoryNames);
   elements.analysisOutput.innerHTML = `
     <article class="analysis-card">
-      <h3>Excessive Spending</h3>
-      <p class="muted">${escapeHtml(excessive.summary || "Analysis complete.")}</p>
-      <p class="muted"><strong>Estimated income:</strong> ${formatMoney(Number(excessive.estimated_income || 0))} • <strong>20% savings target:</strong> ${formatMoney(Number(excessive.savings_target || 0))}</p>
-      ${categories.map((item) => `
-        <p class="muted"><strong>${escapeHtml(item.category || "Category")}:</strong> ${formatMoney(Number(item.amount || 0))} across ${Number(item.unnecessary_transaction_count || 0)} unnecessary transactions. ${escapeHtml(item.reason || "")}</p>
-      `).join("")}
-      <pre>${escapeHtml(JSON.stringify(payload.analysis, null, 2))}</pre>
+      <p class="eyebrow">Your Money Check-In</p>
+      <h3>Small shifts, real progress</h3>
+      <p class="muted">${escapeHtml(positiveMessage)}</p>
+      <p class="muted">Your estimated income is ${formatMoney(Number(excessive.estimated_income || 0))}, which puts a healthy 20% savings target around ${formatMoney(Number(excessive.savings_target || 0))}. You do not need a huge reset here, just a few softer boundaries around repeat wants.</p>
+      ${categories.length ? `
+        <div class="analysis-highlights">
+          ${categories.map((item) => `
+            <div class="analysis-highlight">
+              <strong>${escapeHtml(item.category || "Category")}</strong>
+              <span>${formatMoney(Number(item.amount || 0))}</span>
+              <p>${Number(item.unnecessary_transaction_count || 0)} transactions look flexible. ${escapeHtml(item.reason || "This is a good place to trim gently.")}</p>
+            </div>
+          `).join("")}
+        </div>
+      ` : `<p class="muted">Your spending looks nicely balanced from the transactions available. Keep protecting your savings rhythm.</p>`}
     </article>
     <article class="analysis-card">
-      <h3>Categories Updated</h3>
-      <p class="muted">${payload.categorizedTransactions.length} transaction categories were prepared for the Supabase category column.</p>
+      <h3>Fresh Quests Ready</h3>
+      <p class="muted">I prepared daily and weekly quests that help move extra money toward your savings goal without making the plan feel punishing.</p>
     </article>
   `;
+}
+
+function buildPositiveSpendingMessage(excessiveCategories) {
+  const checkedNeeds = ["Groceries", "Rent or mortgage", "Utilities"];
+  const doingWell = checkedNeeds.filter((category) => !excessiveCategories.includes(category));
+  const excessive = excessiveCategories.length ? excessiveCategories.join(", ") : "none of the main spending areas";
+
+  if (doingWell.length) {
+    return `You are doing well with ${doingWell.join(", ").toLowerCase()}, which suggests your essentials are not the main issue. The gentler opportunity is trimming ${excessive.toLowerCase()} so more of your income can move toward savings.`;
+  }
+
+  return `You have a good starting point. The clearest opportunity is trimming ${excessive.toLowerCase()} in a way that still feels realistic day to day.`;
 }
 
 async function loadTransactions() {

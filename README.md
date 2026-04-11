@@ -72,13 +72,32 @@ http://localhost:3000
 
 ## Supabase Notes
 
-For the hackathon login flow, disable email confirmation in Supabase:
+For the verification login flow, keep email confirmation enabled in Supabase:
 
 ```text
-Authentication -> Providers -> Email -> Confirm email -> Off
+Authentication -> Providers -> Email -> Confirm email -> On
 ```
 
-That lets users sign up and immediately enter the app.
+Then configure the confirmation redirect:
+
+```text
+Authentication -> URL Configuration -> Site URL -> http://localhost:3000
+Authentication -> URL Configuration -> Redirect URLs -> http://localhost:3000
+```
+
+If you run on another port, add that too, for example:
+
+```text
+http://localhost:3001
+```
+
+In the Supabase email template, use the built-in confirmation URL:
+
+```html
+<a href="{{ .ConfirmationURL }}">Confirm your email</a>
+```
+
+Do not use a custom URL with `token_hash={{ .TokenHash }}` unless the app has a matching `/auth/confirm` handler. A bad custom template is the usual cause of links ending in `invalid/null`.
 
 The default table and column names are:
 
@@ -97,6 +116,7 @@ SUPABASE_USERS_TABLE=user
 SUPABASE_TRANSACTION_ID_COLUMN=id
 SUPABASE_TRANSACTION_CATEGORY_COLUMN=category
 APP_USER_ID=00000000-0000-0000-0000-000000000000
+SITE_URL=http://localhost:3000
 ```
 
 Use `SUPABASE_SERVICE_ROLE_KEY` only on the server. It is intentionally not exposed to the browser.

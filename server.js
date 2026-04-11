@@ -11,6 +11,7 @@ const config = {
   supabaseUrl: stripTrailingSlash(process.env.SUPABASE_URL || ""),
   supabaseAnonKey: process.env.SUPABASE_ANON_KEY || "",
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || "",
+  siteUrl: stripTrailingSlash(process.env.SITE_URL || ""),
   transactionsTable: process.env.SUPABASE_TRANSACTIONS_TABLE || "transactions",
   questsTable: process.env.SUPABASE_QUESTS_TABLE || "quest",
   usersTable: process.env.SUPABASE_USERS_TABLE || "user",
@@ -66,7 +67,11 @@ const server = createServer(async (request, response) => {
           fullName: body.fullName
         });
       }
-      return sendJson(response, auth);
+      return sendJson(response, {
+        user,
+        needsConfirmation: !auth.session,
+        message: auth.session ? "Account created. Log in to continue." : "Account created. Confirm your email, then log in."
+      });
     }
 
     if (url.pathname === "/api/auth/login" && request.method === "POST") {
@@ -192,7 +197,8 @@ async function signUp(body) {
     throw new Error("Email and password are required.");
   }
 
-  const response = await fetch(`${config.supabaseUrl}/auth/v1/signup`, {
+  const redirectTo = encodeURIComponent(config.siteUrl || "http://localhost:3000");
+  const response = await fetch(`${config.supabaseUrl}/auth/v1/signup?redirect_to=${redirectTo}`, {
     method: "POST",
     headers: supabaseAuthHeaders(),
     body: JSON.stringify({
