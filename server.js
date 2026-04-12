@@ -38,7 +38,7 @@ const mimeTypes = {
   ".jpeg": "image/jpeg"
 };
 
-const server = createServer(async (request, response) => {
+async function handleRequest(request, response) {
   try {
     const url = new URL(request.url || "/", `http://${request.headers.host}`);
 
@@ -158,11 +158,16 @@ const server = createServer(async (request, response) => {
     console.error(error);
     return sendJson(response, { error: error.message || "Something went wrong" }, 500);
   }
-});
+}
 
-server.listen(config.port, () => {
-  console.log(`Little Wins is running at http://localhost:${config.port}`);
-});
+export default handleRequest;
+
+if (!process.env.VERCEL) {
+  const server = createServer(handleRequest);
+  server.listen(config.port, () => {
+    console.log(`Little Wins is running at http://localhost:${config.port}`);
+  });
+}
 
 async function serveStatic(pathname, response) {
   const filePath = pathname === "/" ? "/index.html" : pathname;
@@ -880,6 +885,10 @@ function sendJson(response, body, status = 200) {
 }
 
 async function readLocalUsersDb() {
+  if (useSupabaseUserStore()) {
+    return readSupabaseUsersDb();
+  }
+
   try {
     const text = await readFile(config.localUsersFile, "utf8");
     const parsed = JSON.parse(text);
@@ -892,11 +901,48 @@ async function readLocalUsersDb() {
 }
 
 async function writeLocalUsersDb(db) {
+  if (useSupabaseUserStore()) {
+    await writeSupabaseUsersDb(db);
+    return;
+  }
+
   await writeFile(config.localUsersFile, `${JSON.stringify({ users: db.users.map(normalizeStoredUser) }, null, 2)}\n`);
 }
 
 async function syncUserToSupabase(user) {
   if (!config.supabaseUrl || !config.supabaseAnonKey) return;
+  await upsertSupabaseUser(user);
+}
+
+function useSupabaseUserStore() {
+  return Boolean(config.supabaseUrl && config.supabaseServiceRoleKey);
+}
+
+async function readSupabaseUsersDb() {
+  assertSupabaseConfig();
+  const response = await fetch(`${config.supabaseUrl}/rest/v1/${encodeURIComponent(config.usersTable)}?select=*`, {
+    headers: supabaseHeaders()
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase users fetch failed: ${response.status} ${await response.text()}`);
+  }
+
+  const rows = await response.json();
+  return {
+    users: Array.isArray(rows) ? rows.map(normalizeStoredUser) : []
+  };
+}
+
+async function writeSupabaseUsersDb(db) {
+  const users = Array.isArray(db?.users) ? db.users.map(normalizeStoredUser) : [];
+  for (const user of users) {
+    await upsertSupabaseUser(user);
+  }
+}
+
+async function upsertSupabaseUser(user) {
+  assertSupabaseConfig();
 
   const normalizedUser = normalizeStoredUser(user);
   const response = await fetch(`${config.supabaseUrl}/rest/v1/${encodeURIComponent(config.usersTable)}?on_conflict=${encodeURIComponent(config.userIdColumn)}`, {
