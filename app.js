@@ -28,6 +28,7 @@ const elements = {
   profileTitle: document.querySelector("#profile-title"),
   profileEmail: document.querySelector("#profile-email"),
   profileMessage: document.querySelector("#profile-message"),
+  bankLastSynced: document.querySelector("#bank-last-synced"),
   goalsList: document.querySelector("#goals-list"),
   goalForm: document.querySelector("#goal-form"),
   editGoalModal: document.querySelector("#edit-goal-modal"),
@@ -235,14 +236,23 @@ function showScreen(screen, options = {}) {
 }
 
 function render() {
+  renderBankLastSynced();
   renderGoals();
   renderQuests();
+}
+
+function renderBankLastSynced() {
+  if (!elements.bankLastSynced) return;
+  elements.bankLastSynced.textContent = `Now, ${new Date().toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit"
+  })}`;
 }
 
 function renderGoals() {
   state.goals = ensureGoalAllocations(state.goals);
   elements.goalsList.innerHTML = state.goals.map((goal, index) => {
-    const progress = goal.target > 0 ? Math.min(100, Math.round((goal.saved / goal.target) * 100)) : 0;
+    const progress = goalProgressPercent(goal);
     const allocation = goalAllocationPercent(goal);
     const remaining = Math.max(0, goal.target - goal.saved);
     return `
@@ -269,7 +279,7 @@ function renderGoals() {
         </div>
         <div class="progress-copy">
           <span>Progress</span>
-          <span>${progress}%</span>
+          <span>${formatProgressPercent(progress)}</span>
         </div>
         <div class="progress-track" style="--progress:${progress}%"><span></span></div>
         <div class="allocation-chip">
@@ -298,6 +308,17 @@ function renderGoals() {
   });
 
   renderTotalSaved();
+}
+
+function goalProgressPercent(goal) {
+  const target = Number(goal.target || 0);
+  if (target <= 0) return 0;
+  const saved = Number(goal.saved || 0);
+  return Math.min(100, Math.max(0, Math.round((saved / target) * 1000) / 10));
+}
+
+function formatProgressPercent(progress) {
+  return `${Number.isInteger(progress) ? progress : progress.toFixed(1)}%`;
 }
 
 function openEditGoalModal(goal) {
@@ -606,13 +627,15 @@ function bindQuestCompletionEvents() {
       const saving = Number(quest?.saving || 0);
       const nextCompletion = Boolean(checkbox.checked);
       const previousTotal = state.totalSavedLittleWins;
+      const previousGoals = state.goals.map((goal) => ({ ...goal }));
       const delta = nextCompletion === wasComplete ? 0 : nextCompletion ? saving : -saving;
 
       updateLocalQuestCompletion(questId, nextCompletion);
       state.totalSavedLittleWins = Math.max(0, state.totalSavedLittleWins + delta);
+      applyQuestSavingToGoals(delta);
       saveTotalSavedLittleWinsToSession();
-      renderQuests();
-      renderTotalSaved();
+      saveGoals();
+      render();
       if (!wasComplete && nextCompletion) {
         showCoinCelebration({ quest, saving });
       }
@@ -635,18 +658,70 @@ function bindQuestCompletionEvents() {
           state.totalSavedLittleWins = Number(payload.totalSavedLittleWins || 0);
         }
         saveTotalSavedLittleWinsToSession();
-        renderQuests();
-        renderTotalSaved();
+        await persistGoalSavings();
+        render();
       } catch (error) {
         updateLocalQuestCompletion(questId, wasComplete);
         state.totalSavedLittleWins = previousTotal;
+        state.goals = previousGoals;
         saveTotalSavedLittleWinsToSession();
-        renderQuests();
-        renderTotalSaved();
+        saveGoals();
+        render();
         setAnalysisStatus(error.message);
       }
     });
   });
+}
+
+function applyQuestSavingToGoals(delta) {
+  const amount = roundMoney(delta);
+  if (!amount || !state.goals.length) return;
+
+  state.goals = ensureGoalAllocations(state.goals);
+  const distributions = distributeByAllocation(amount, state.goals);
+  state.goals = state.goals.map((goal, index) => ({
+    ...goal,
+    saved: Math.max(0, roundMoney(Number(goal.saved || 0) + distributions[index]))
+  }));
+}
+
+function distributeByAllocation(amount, goals) {
+  if (!goals.length) return [];
+  const cents = Math.round(amount * 100);
+  const direction = cents < 0 ? -1 : 1;
+  const absoluteCents = Math.abs(cents);
+  const allocations = goals.map((goal) => clampPercent(goal.allocation));
+  const totalAllocation = allocations.reduce((sum, allocation) => sum + allocation, 0);
+  const weights = totalAllocation === 100 ? allocations : percentagesFromWeights(goals.map((goal) => Number(goal.target || 0)));
+  const raw = weights.map((weight) => (absoluteCents * weight) / 100);
+  const floored = raw.map(Math.floor);
+  let remainder = absoluteCents - floored.reduce((sum, value) => sum + value, 0);
+  const order = raw
+    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((left, right) => right.fraction - left.fraction);
+
+  for (let index = 0; index < order.length && remainder > 0; index += 1) {
+    floored[order[index].index] += 1;
+    remainder -= 1;
+  }
+
+  return floored.map((value) => direction * value / 100);
+}
+
+function roundMoney(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.round(number * 100) / 100;
+}
+
+async function persistGoalSavings() {
+  await Promise.all(state.goals.map((goal) => updateGoalInApi(goal.id, {
+    name: goal.name,
+    target: goal.target,
+    saved: goal.saved,
+    category: goal.category,
+    allocation: goal.allocation
+  })));
 }
 
 function findQuestById(questId) {
@@ -676,7 +751,7 @@ function showCoinCelebration({ quest, saving }) {
       <span class="coin-message-icon">$</span>
       <div>
         <strong>${escapeHtml(title)}</strong>
-        <span>${formatMoney(amount)} added to your Little Wins total</span>
+        <span>${formatMoney(amount)} added across your savings goals</span>
       </div>
     </div>
     <div class="coin-stage" aria-hidden="true">
@@ -767,9 +842,7 @@ function setAnalyseLoading(isLoading) {
           <h3>Reading your spending rhythm</h3>
           <p class="muted">Checking transactions, spotting flexible spending, and building quests that help your savings grow.</p>
         </div>
-        <div class="loading-steps" aria-hidden="true">
-          <span></span>
-          <span></span>
+        <div class="loading-progress" aria-hidden="true">
           <span></span>
         </div>
       </article>
