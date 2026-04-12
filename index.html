@@ -117,6 +117,40 @@
           <div id="goals-list" class="goal-list"></div>
         </section>
 
+        <div id="edit-goal-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="edit-goal-title">
+          <form id="edit-goal-form" class="edit-goal-modal">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Savings Goal</p>
+                <h2 id="edit-goal-title">Edit Goal</h2>
+              </div>
+              <button class="icon-button modal-close" type="button" data-close-edit-goal aria-label="Close edit goal">
+                <span class="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <label>
+              Savings goal name
+              <input name="name" type="text" required>
+            </label>
+            <label>
+              Savings goal amount
+              <input name="target" type="number" min="1" step="1" required>
+            </label>
+            <label>
+              Savings goal amount saved
+              <input name="saved" type="number" min="0" step="1">
+            </label>
+            <div class="allocation-box">
+              <label>
+                Name of % allocation
+                <input name="allocation" type="number" min="0" max="100" step="1">
+              </label>
+              <strong id="edit-goal-allocation">Total 100%</strong>
+            </div>
+            <button class="primary-button" type="submit">Save Changes</button>
+          </form>
+        </div>
+
         <section class="panel">
           <div class="section-heading">
             <div>
@@ -128,14 +162,18 @@
           <div id="analysis-output" class="analysis-output"></div>
         </section>
 
+      </section>
+
+      <section id="transactions-screen" class="screen" aria-labelledby="transactions-title">
         <section class="panel">
           <div class="section-heading">
             <div>
               <p class="eyebrow">Supabase</p>
-              <h2>Transactions</h2>
+              <h1 id="transactions-title">Transactions</h1>
             </div>
             <button id="refresh-transactions" class="text-action">Refresh</button>
           </div>
+          <div id="transactions-chart" class="transactions-chart"></div>
           <div id="transactions-list" class="transaction-list">
             <article class="transaction-row">
               <p class="muted">Connect Supabase to preview transaction-table details here.</p>
@@ -150,7 +188,7 @@
           <p class="hero-label">Total Money Saved</p>
           <strong id="total-saved">$0</strong>
           <div class="progress-row">
-            <span>Today's Progress</span>
+            <span id="quest-progress-title">Today's Progress</span>
             <span id="quest-progress-label">0 / 3 Quests</span>
           </div>
           <div class="progress-track"><span id="quest-progress-bar"></span></div>
@@ -160,7 +198,11 @@
           <div>
             <h1 id="quests-title">Daily Quests</h1>
           </div>
-          <span class="pill"><span class="material-symbols-outlined">timer</span> Today</span>
+          <button id="daily-day-toggle" class="pill day-toggle" type="button" aria-label="Show tomorrow's daily quests">
+            <span class="material-symbols-outlined">timer</span>
+            <span id="daily-day-label">Today</span>
+            <span class="material-symbols-outlined day-arrow">chevron_right</span>
+          </button>
         </div>
         <div id="daily-quests" class="quest-list"></div>
 
@@ -194,6 +236,10 @@
       <button class="nav-item active" data-screen="savings">
         <span class="material-symbols-outlined">dashboard</span>
         <span>Dashboard</span>
+      </button>
+      <button class="nav-item" data-screen="transactions">
+        <span class="material-symbols-outlined">receipt_long</span>
+        <span>Transactions</span>
       </button>
       <button class="nav-item" data-screen="quests">
         <span class="material-symbols-outlined">rocket_launch</span>

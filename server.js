@@ -96,6 +96,21 @@ const server = createServer(async (request, response) => {
       return sendJson(response, { goal });
     }
 
+    if (url.pathname.startsWith("/api/user-goals/") && request.method === "PATCH") {
+      const authUser = await getAuthenticatedUser(request);
+      const id = decodeURIComponent(url.pathname.replace("/api/user-goals/", ""));
+      const body = await readJson(request);
+      const goal = await updateUserGoal(authUser.id, id, {
+        goalName: body.name,
+        goalAmount: body.target,
+        goalSaved: body.saved,
+        category: body.category,
+        allocation: body.allocation,
+        allocations: body.allocations
+      });
+      return sendJson(response, { goal });
+    }
+
     if (url.pathname.startsWith("/api/user-goals/") && request.method === "DELETE") {
       const authUser = await getAuthenticatedUser(request);
       const id = decodeURIComponent(url.pathname.replace("/api/user-goals/", ""));
@@ -130,7 +145,11 @@ const server = createServer(async (request, response) => {
       const id = decodeURIComponent(url.pathname.replace("/api/quests/", ""));
       const body = await readJson(request);
       const authUser = await getOptionalAuthenticatedUser(request);
-      const result = await updateQuestCompletion(id, Boolean(body?.completion), authUser?.id);
+      const authUserId = authUser?.id || normalizeOptionalUuid(body?.userId || "");
+      const result = await updateQuestCompletion(id, Boolean(body?.completion), authUserId, {
+        previousCompletion: body?.previousCompletion,
+        saving: body?.saving
+      });
       return sendJson(response, result);
     }
 
@@ -205,6 +224,7 @@ async function signUp(body) {
     savings_goal_name: [],
     savings_goal_amount: [],
     savings_goal_saved: [],
+    savings_goal_allocation: [],
     Total_saved_littlewins: 0,
     created_at: now,
     updated_at: now
@@ -310,6 +330,9 @@ async function saveUserGoal({ authUserId, email, fullName, goalName, goalAmount,
   user.savings_goal_name.unshift(goal.name);
   user.savings_goal_amount.unshift(goal.target);
   user.savings_goal_saved.unshift(goal.saved);
+  if (!Array.isArray(user.savings_goal_allocation)) user.savings_goal_allocation = [];
+  user.savings_goal_allocation.unshift(0);
+  user.savings_goal_allocation = defaultGoalAllocations(user.savings_goal_amount);
   user.updated_at = new Date().toISOString();
   await writeLocalUsersDb(db);
   await syncUserToSupabase(user);
@@ -327,9 +350,44 @@ async function deleteUserGoal(authUserId, id) {
   user.savings_goal_name.splice(index, 1);
   user.savings_goal_amount.splice(index, 1);
   user.savings_goal_saved.splice(index, 1);
+  if (Array.isArray(user.savings_goal_allocation)) user.savings_goal_allocation.splice(index, 1);
   user.updated_at = new Date().toISOString();
   await writeLocalUsersDb(db);
   await syncUserToSupabase(user);
+}
+
+async function updateUserGoal(authUserId, id, { goalName, goalAmount, goalSaved, category, allocation, allocations }) {
+  const db = await readLocalUsersDb();
+  const user = db.users.find((item) => item.userid === authUserId);
+  if (!user) throw new Error("User not found.");
+
+  const index = user.savings_goal_id.findIndex((goalId) => String(goalId) === String(id));
+  if (index === -1) throw new Error("Goal not found.");
+
+  user.savings_goal_name[index] = String(goalName || "Savings goal");
+  user.savings_goal_amount[index] = Number(goalAmount || 0);
+  user.savings_goal_saved[index] = Number(goalSaved || 0);
+  if (!Array.isArray(user.savings_goal_allocation)) user.savings_goal_allocation = [];
+  user.savings_goal_allocation[index] = Number(allocation || 0);
+  if (Array.isArray(allocations)) {
+    for (const item of allocations) {
+      const allocationIndex = user.savings_goal_id.findIndex((goalId) => String(goalId) === String(item.id));
+      if (allocationIndex !== -1) user.savings_goal_allocation[allocationIndex] = Number(item.allocation || 0);
+    }
+  }
+  user.updated_at = new Date().toISOString();
+  await writeLocalUsersDb(db);
+  await syncUserToSupabase(user);
+
+  return {
+    id,
+    name: user.savings_goal_name[index],
+    category: String(category || "Savings"),
+    target: user.savings_goal_amount[index],
+    saved: user.savings_goal_saved[index],
+    allocation: user.savings_goal_allocation[index],
+    icon: "savings"
+  };
 }
 
 function goalsFromUserRow(row) {
@@ -340,10 +398,39 @@ function goalsFromUserRow(row) {
     category: "Savings",
     target: goals.savings_goal_amount[index],
     saved: goals.savings_goal_saved[index],
+    allocation: goals.savings_goal_allocation[index],
     icon: "savings",
     email: row.user_email,
     fullName: row.full_name
   }));
+}
+
+function defaultGoalAllocations(goalAmounts) {
+  const weights = Array.isArray(goalAmounts)
+    ? goalAmounts.map((amount) => Math.max(0, Number(amount || 0)))
+    : [];
+  if (!weights.length) return [];
+
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  if (totalWeight <= 0) {
+    const base = Math.floor(100 / weights.length);
+    const remainder = 100 - base * weights.length;
+    return weights.map((_, index) => base + (index < remainder ? 1 : 0));
+  }
+
+  const raw = weights.map((weight) => (weight / totalWeight) * 100);
+  const floored = raw.map(Math.floor);
+  let remainder = 100 - floored.reduce((sum, value) => sum + value, 0);
+  const order = raw
+    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((left, right) => right.fraction - left.fraction);
+
+  for (let index = 0; index < order.length && remainder > 0; index += 1) {
+    floored[order[index].index] += 1;
+    remainder -= 1;
+  }
+
+  return floored;
 }
 
 async function analyseTransactions(transactions, goals) {
@@ -580,7 +667,7 @@ function mergeSavedQuestRows(quests, savedRows) {
   }));
 }
 
-async function updateQuestCompletion(id, completion, authUserId) {
+async function updateQuestCompletion(id, completion, authUserId, options = {}) {
   assertSupabaseConfig();
   if (!id) throw new Error("Quest id is required.");
 
@@ -594,8 +681,9 @@ async function updateQuestCompletion(id, completion, authUserId) {
 
   const existingRows = await existingResponse.json();
   const existingQuest = existingRows[0] || null;
-  const wasComplete = Boolean(existingQuest?.completion);
-  const saving = Number(existingQuest?.saving || 0);
+  const hasClientPreviousCompletion = typeof options.previousCompletion === "boolean";
+  const wasComplete = hasClientPreviousCompletion ? options.previousCompletion : Boolean(existingQuest?.completion);
+  const saving = Number(options.saving ?? existingQuest?.saving ?? 0);
 
   const response = await fetch(`${config.supabaseUrl}/rest/v1/${encodeURIComponent(config.questsTable)}?id=eq.${encodeURIComponent(id)}`, {
     method: "PATCH",
@@ -613,8 +701,8 @@ async function updateQuestCompletion(id, completion, authUserId) {
   const rows = await response.json();
   const quest = rows[0] || null;
   const delta = completion === wasComplete ? 0 : completion ? saving : -saving;
-  const totalSavedLittleWins = authUserId ? await updateLittleWinsSavings(authUserId, delta) : null;
-  return { quest, totalSavedLittleWins };
+  const totalSavedLittleWins = await updateLittleWinsSavings(authUserId, delta);
+  return { quest, delta, totalSavedLittleWins };
 }
 
 async function updateTransactionCategories(categorizedTransactions) {
@@ -845,7 +933,9 @@ async function ensureUserSynced(authUserId) {
 }
 
 async function updateLittleWinsSavings(authUserId, delta) {
-  if (!authUserId || !Number.isFinite(Number(delta)) || Number(delta) === 0) {
+  if (!authUserId) throw new Error("You need to log in first.");
+
+  if (!Number.isFinite(Number(delta)) || Number(delta) === 0) {
     const db = await readLocalUsersDb();
     const user = db.users.find((item) => item.userid === authUserId);
     return Number(user?.Total_saved_littlewins || 0);
@@ -853,7 +943,7 @@ async function updateLittleWinsSavings(authUserId, delta) {
 
   const db = await readLocalUsersDb();
   const user = db.users.find((item) => item.userid === authUserId);
-  if (!user) return 0;
+  if (!user) throw new Error("User not found.");
 
   const nextTotal = Math.max(0, Number(user.Total_saved_littlewins || 0) + Number(delta));
   user.Total_saved_littlewins = nextTotal;
@@ -875,6 +965,7 @@ function normalizeStoredUser(user) {
     savings_goal_name: goals.savings_goal_name,
     savings_goal_amount: goals.savings_goal_amount,
     savings_goal_saved: goals.savings_goal_saved,
+    savings_goal_allocation: goals.savings_goal_allocation,
     Total_saved_littlewins: toMoneyNumber(user.Total_saved_littlewins),
     created_at: user.created_at || new Date().toISOString(),
     updated_at: user.updated_at || new Date().toISOString()
@@ -886,12 +977,14 @@ function normalizeGoalLists(user) {
   const names = Array.isArray(user.savings_goal_name) ? user.savings_goal_name : [];
   const amounts = Array.isArray(user.savings_goal_amount) ? user.savings_goal_amount : [];
   const savedAmounts = Array.isArray(user.savings_goal_saved) ? user.savings_goal_saved : [];
-  const goalCount = Math.max(ids.length, names.length, amounts.length, savedAmounts.length);
+  const allocations = Array.isArray(user.savings_goal_allocation) ? user.savings_goal_allocation : [];
+  const goalCount = Math.max(ids.length, names.length, amounts.length, savedAmounts.length, allocations.length);
   const goals = {
     savings_goal_id: [],
     savings_goal_name: [],
     savings_goal_amount: [],
-    savings_goal_saved: []
+    savings_goal_saved: [],
+    savings_goal_allocation: []
   };
 
   for (let index = 0; index < goalCount; index += 1) {
@@ -904,6 +997,7 @@ function normalizeGoalLists(user) {
     goals.savings_goal_name.push(name || "Savings goal");
     goals.savings_goal_amount.push(amount);
     goals.savings_goal_saved.push(saved);
+    goals.savings_goal_allocation.push(toMoneyNumber(allocations[index]));
   }
 
   return goals;

@@ -340,6 +340,71 @@ h3 {
   display: none;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(24, 24, 32, 0.34);
+}
+
+.modal-backdrop.hidden {
+  display: none;
+}
+
+.edit-goal-modal {
+  width: min(100%, 430px);
+  display: grid;
+  gap: 14px;
+  border: 1px solid rgba(198, 197, 212, 0.7);
+  border-radius: 8px;
+  padding: 18px;
+  background: var(--surface);
+  box-shadow: 0 22px 54px rgba(26, 35, 126, 0.18);
+}
+
+.modal-close {
+  color: var(--text);
+}
+
+.allocation-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--surface-low);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.allocation-box strong {
+  color: var(--secondary);
+  font-size: 22px;
+}
+
+.allocation-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface-low);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.allocation-chip strong {
+  color: var(--secondary);
+  font-size: 16px;
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -432,12 +497,57 @@ input {
   color: var(--tertiary);
 }
 
-.delete-goal {
+.goal-menu {
+  position: relative;
+}
+
+.goal-menu summary {
   width: 38px;
   height: 38px;
+  display: grid;
+  place-items: center;
   border: 0;
   border-radius: 8px;
-  background: #ffdad6;
+  background: var(--surface-low);
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+}
+
+.goal-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.goal-menu-list {
+  position: absolute;
+  top: 44px;
+  right: 0;
+  z-index: 3;
+  min-width: 120px;
+  overflow: hidden;
+  border: 1px solid rgba(198, 197, 212, 0.7);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 12px 24px rgba(26, 35, 126, 0.12);
+}
+
+.goal-menu-list button {
+  width: 100%;
+  min-height: 38px;
+  border: 0;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.goal-menu-list button:hover {
+  background: var(--surface-low);
+}
+
+.goal-menu-list [data-delete-goal] {
   color: var(--danger);
 }
 
@@ -494,6 +604,10 @@ input {
 .analysis-card {
   display: grid;
   gap: 12px;
+}
+
+.analysis-action {
+  justify-self: start;
 }
 
 .loading-card {
@@ -593,6 +707,62 @@ input {
   line-height: 1.45;
 }
 
+.transactions-chart {
+  margin-bottom: 16px;
+}
+
+.chart-card {
+  display: grid;
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid rgba(198, 197, 212, 0.45);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.bar-chart {
+  display: grid;
+  gap: 14px;
+}
+
+.bar-row {
+  display: grid;
+  gap: 8px;
+}
+
+.bar-copy {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.bar-copy strong,
+.bar-copy span {
+  font-weight: 800;
+}
+
+.bar-copy span {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.bar-track {
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.bar-track span {
+  display: block;
+  width: var(--bar);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--bar-color);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -679,6 +849,7 @@ input {
   align-items: center;
   gap: 6px;
   min-height: 34px;
+  border: 0;
   border-radius: 999px;
   padding: 0 12px;
   background: var(--tertiary-soft);
@@ -691,6 +862,23 @@ input {
 .pill.blue {
   background: var(--primary-soft);
   color: var(--primary);
+}
+
+.day-toggle {
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+
+.day-toggle:hover {
+  transform: translateX(2px);
+}
+
+.day-arrow {
+  font-size: 18px;
+  transition: transform 0.18s ease;
+}
+
+.day-toggle.tomorrow .day-arrow {
+  transform: rotate(180deg);
 }
 
 .analysis-card pre {
@@ -796,7 +984,8 @@ input {
 }
 
 .nav-item {
-  min-width: 86px;
+  flex: 1;
+  min-width: 0;
   min-height: 54px;
   display: grid;
   place-items: center;

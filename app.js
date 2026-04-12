@@ -13,6 +13,8 @@ const state = {
   user: null,
   goals: [],
   totalSavedLittleWins: Number(loadSession()?.user?.Total_saved_littlewins || 0),
+  dailyQuestDay: "today",
+  editingGoalId: null,
   analysis: null
 };
 
@@ -28,14 +30,21 @@ const elements = {
   profileMessage: document.querySelector("#profile-message"),
   goalsList: document.querySelector("#goals-list"),
   goalForm: document.querySelector("#goal-form"),
+  editGoalModal: document.querySelector("#edit-goal-modal"),
+  editGoalForm: document.querySelector("#edit-goal-form"),
+  editGoalAllocation: document.querySelector("#edit-goal-allocation"),
   openGoalForm: document.querySelector("#open-goal-form"),
   analyseButton: document.querySelector("#analyse-button"),
   analysisOutput: document.querySelector("#analysis-output"),
   refreshTransactions: document.querySelector("#refresh-transactions"),
+  transactionsChart: document.querySelector("#transactions-chart"),
   transactionsList: document.querySelector("#transactions-list"),
   dailyQuests: document.querySelector("#daily-quests"),
   weeklyQuests: document.querySelector("#weekly-quests"),
+  dailyDayToggle: document.querySelector("#daily-day-toggle"),
+  dailyDayLabel: document.querySelector("#daily-day-label"),
   totalSaved: document.querySelector("#total-saved"),
+  questProgressTitle: document.querySelector("#quest-progress-title"),
   questProgressLabel: document.querySelector("#quest-progress-label"),
   questProgressBar: document.querySelector("#quest-progress-bar"),
   buddyMessage: document.querySelector("#buddy-message")
@@ -50,7 +59,9 @@ function bindEvents() {
   });
 
   elements.openGoalForm.addEventListener("click", () => {
+    state.editingGoalId = null;
     elements.goalForm.classList.toggle("hidden");
+    elements.goalForm.reset();
   });
 
   document.querySelectorAll("[data-auth-tab]").forEach((button) => {
@@ -71,16 +82,39 @@ function bindEvents() {
       category: String(form.get("category") || "Custom").trim()
     };
 
-    const goal = await saveGoalToApi(goalInput);
-    state.goals = [goal || { ...goalInput, id: crypto.randomUUID(), icon: "savings" }, ...state.goals];
+    if (state.editingGoalId) {
+      const goal = await updateGoalInApi(state.editingGoalId, goalInput);
+      state.goals = state.goals.map((item) => item.id === state.editingGoalId
+        ? { ...item, ...(goal || goalInput), id: state.editingGoalId }
+        : item);
+      state.editingGoalId = null;
+    } else {
+      const goal = await saveGoalToApi(goalInput);
+      state.goals = [goal || { ...goalInput, id: crypto.randomUUID(), icon: "savings" }, ...state.goals];
+      state.goals = defaultGoalAllocations(state.goals);
+    }
+    state.goals = ensureGoalAllocations(state.goals);
     saveGoals();
     elements.goalForm.reset();
     elements.goalForm.classList.add("hidden");
     render();
   });
 
+  elements.editGoalForm.addEventListener("input", updateEditGoalAllocation);
+  elements.editGoalForm.addEventListener("submit", saveEditedGoal);
+  document.querySelectorAll("[data-close-edit-goal]").forEach((button) => {
+    button.addEventListener("click", closeEditGoalModal);
+  });
+  elements.editGoalModal.addEventListener("click", (event) => {
+    if (event.target === elements.editGoalModal) closeEditGoalModal();
+  });
+
   elements.analyseButton.addEventListener("click", analyseSpending);
   elements.refreshTransactions.addEventListener("click", loadTransactions);
+  elements.dailyDayToggle.addEventListener("click", toggleDailyQuestDay);
+  elements.analysisOutput.addEventListener("click", (event) => {
+    if (event.target.closest("[data-go-to-quests]")) showScreen("quests", { scrollTop: true });
+  });
 }
 
 async function init() {
@@ -188,13 +222,15 @@ function setAuthMessage(message) {
   elements.authMessage.textContent = message;
 }
 
-function showScreen(screen) {
+function showScreen(screen, options = {}) {
+  if (screen === "quests") state.dailyQuestDay = "today";
   document.querySelectorAll(".screen").forEach((section) => {
     section.classList.toggle("active", section.id === `${screen}-screen`);
   });
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.classList.toggle("active", button.dataset.screen === screen);
   });
+  if (options.scrollTop) requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
 }
 
 function render() {
@@ -203,8 +239,10 @@ function render() {
 }
 
 function renderGoals() {
+  state.goals = ensureGoalAllocations(state.goals);
   elements.goalsList.innerHTML = state.goals.map((goal, index) => {
     const progress = goal.target > 0 ? Math.min(100, Math.round((goal.saved / goal.target) * 100)) : 0;
+    const allocation = goalAllocationPercent(goal);
     const remaining = Math.max(0, goal.target - goal.saved);
     return `
       <article class="goal-card">
@@ -218,15 +256,25 @@ function renderGoals() {
               <p class="muted">${escapeHtml(goal.category || "Custom")}</p>
             </div>
           </div>
-          <button class="delete-goal" data-delete-goal="${goal.id}" aria-label="Delete ${escapeHtml(goal.name)}">
-            <span class="material-symbols-outlined">delete</span>
-          </button>
+          <details class="goal-menu">
+            <summary aria-label="Goal actions for ${escapeHtml(goal.name)}">
+              <span class="material-symbols-outlined">more_horiz</span>
+            </summary>
+            <div class="goal-menu-list">
+              <button type="button" data-edit-goal="${goal.id}">Edit</button>
+              <button type="button" data-delete-goal="${goal.id}">Delete</button>
+            </div>
+          </details>
         </div>
         <div class="progress-copy">
           <span>Progress</span>
           <span>${progress}%</span>
         </div>
         <div class="progress-track" style="--progress:${progress}%"><span></span></div>
+        <div class="allocation-chip">
+          <span>${escapeHtml(goal.name)} allocation</span>
+          <strong>${allocation}%</strong>
+        </div>
         <p class="muted">${formatMoney(goal.saved)} saved • ${formatMoney(remaining)} to go</p>
       </article>
     `;
@@ -241,15 +289,163 @@ function renderGoals() {
     });
   });
 
+  document.querySelectorAll("[data-edit-goal]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const goal = state.goals.find((item) => item.id === button.dataset.editGoal);
+      openEditGoalModal(goal);
+    });
+  });
+
   renderTotalSaved();
 }
 
+function openEditGoalModal(goal) {
+  if (!goal) return;
+  state.editingGoalId = goal.id;
+  elements.editGoalForm.elements.name.value = goal.name || "";
+  elements.editGoalForm.elements.target.value = Number(goal.target || 0);
+  elements.editGoalForm.elements.saved.value = Number(goal.saved || 0);
+  elements.editGoalForm.elements.allocation.value = goalAllocationPercent(goal);
+  updateEditGoalAllocation();
+  elements.editGoalModal.classList.remove("hidden");
+  elements.editGoalForm.elements.name.focus();
+}
+
+function closeEditGoalModal() {
+  state.editingGoalId = null;
+  elements.editGoalForm.reset();
+  elements.editGoalModal.classList.add("hidden");
+  updateEditGoalAllocation();
+}
+
+function updateEditGoalAllocation() {
+  const allocation = clampPercent(elements.editGoalForm.elements.allocation.value);
+  elements.editGoalForm.elements.allocation.value = allocation;
+  elements.editGoalAllocation.textContent = "Total 100%";
+}
+
+function goalAllocationPercent(goal) {
+  return clampPercent(goal?.allocation ?? 0);
+}
+
+function ensureGoalAllocations(goals) {
+  if (!goals.length) return [];
+
+  const hasAllocations = goals.some((goal) => Number.isFinite(Number(goal.allocation)));
+  if (hasAllocations) {
+    const total = goals.reduce((sum, goal) => sum + clampPercent(goal.allocation), 0);
+    if (total === 100) return goals.map((goal) => ({ ...goal, allocation: clampPercent(goal.allocation) }));
+  }
+
+  const weights = goals.map((goal) => Math.max(0, Number(goal.target || 0)));
+  const allocations = percentagesFromWeights(weights);
+  return goals.map((goal, index) => ({ ...goal, allocation: allocations[index] }));
+}
+
+function defaultGoalAllocations(goals) {
+  if (!goals.length) return [];
+  const weights = goals.map((goal) => Math.max(0, Number(goal.target || 0)));
+  const allocations = percentagesFromWeights(weights);
+  return goals.map((goal, index) => ({ ...goal, allocation: allocations[index] }));
+}
+
+function rebalanceGoalAllocations(goals, editedGoalId, editedAllocation) {
+  if (!goals.length) return [];
+  if (goals.length === 1) return goals.map((goal) => ({ ...goal, allocation: 100 }));
+
+  const selectedAllocation = clampPercent(editedAllocation);
+  const remaining = 100 - selectedAllocation;
+  const otherGoals = goals.filter((goal) => goal.id !== editedGoalId);
+  const otherWeights = otherGoals.map((goal) => Math.max(0, Number(goal.allocation ?? goal.target ?? 0)));
+  const otherAllocations = percentagesFromWeights(otherWeights, remaining);
+  const allocationById = new Map(otherGoals.map((goal, index) => [goal.id, otherAllocations[index]]));
+
+  return goals.map((goal) => ({
+    ...goal,
+    allocation: goal.id === editedGoalId ? selectedAllocation : allocationById.get(goal.id) || 0
+  }));
+}
+
+function percentagesFromWeights(weights, totalPercent = 100) {
+  if (!weights.length) return [];
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  if (totalWeight <= 0) {
+    const base = Math.floor(totalPercent / weights.length);
+    const remainder = totalPercent - base * weights.length;
+    return weights.map((_, index) => base + (index < remainder ? 1 : 0));
+  }
+
+  const raw = weights.map((weight) => (weight / totalWeight) * totalPercent);
+  const floored = raw.map(Math.floor);
+  let remainder = totalPercent - floored.reduce((sum, value) => sum + value, 0);
+  const order = raw
+    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((left, right) => right.fraction - left.fraction);
+
+  for (let index = 0; index < order.length && remainder > 0; index += 1) {
+    floored[order[index].index] += 1;
+    remainder -= 1;
+  }
+
+  return floored;
+}
+
+function clampPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.min(100, Math.max(0, Math.round(number)));
+}
+
+async function saveEditedGoal(event) {
+  event.preventDefault();
+  const goal = state.goals.find((item) => item.id === state.editingGoalId);
+  if (!goal) return;
+
+  const form = new FormData(elements.editGoalForm);
+  const goalInput = {
+    name: String(form.get("name") || "").trim(),
+    target: Number(form.get("target") || 0),
+    saved: Number(form.get("saved") || 0),
+    category: goal.category || "Custom",
+    allocation: clampPercent(form.get("allocation"))
+  };
+
+  const rebalancedGoals = rebalanceGoalAllocations(state.goals, goal.id, goalInput.allocation);
+  const allocationPayload = rebalancedGoals.map(({ id, allocation }) => ({ id, allocation }));
+  const updatedGoal = await updateGoalInApi(goal.id, { ...goalInput, allocations: allocationPayload });
+  state.goals = rebalancedGoals.map((item) => item.id === goal.id
+    ? { ...item, ...(updatedGoal || goalInput), id: goal.id }
+    : item);
+  saveGoals();
+  closeEditGoalModal();
+  render();
+}
+
 function renderQuests() {
-  const dailyGoals = asArray(state.analysis?.["daily goals"], fallbackDailyGoals);
-  const weeklyGoals = asArray(state.analysis?.["weekly goals"], fallbackWeeklyGoals);
-  elements.dailyQuests.innerHTML = dailyGoals.map((goal, index) => questCard(goal, index, false)).join("");
+  const hasAnalysis = Boolean(state.analysis);
+  const todayGoals = hasAnalysis ? asArray(state.analysis?.["daily goals"], []) : [];
+  const dailyGoals = state.dailyQuestDay === "tomorrow" ? buildTomorrowDailyGoals(todayGoals) : todayGoals;
+  const weeklyGoals = hasAnalysis ? asArray(state.analysis?.["weekly goals"], []) : [];
+  const isTomorrow = state.dailyQuestDay === "tomorrow";
+
+  elements.dailyDayLabel.textContent = isTomorrow ? "Tomorrow" : "Today";
+  elements.questProgressTitle.textContent = isTomorrow ? "Tomorrow's Progress" : "Today's Progress";
+  elements.dailyDayToggle.setAttribute("aria-label", isTomorrow ? "Show today's daily quests" : "Show tomorrow's daily quests");
+  elements.dailyDayToggle.classList.toggle("tomorrow", isTomorrow);
+
+  if (!hasAnalysis) {
+    elements.dailyQuests.innerHTML = `<article class="quest-card empty-state"><h3>No quests yet</h3><p class="muted">Run a spending analysis from the Dashboard to generate daily quests.</p></article>`;
+    elements.weeklyQuests.innerHTML = `<article class="quest-card empty-state"><h3>No weekly quests yet</h3><p class="muted">Weekly trackers will appear after your analysis is ready.</p></article>`;
+    elements.questProgressLabel.textContent = "0 / 0 Quests";
+    elements.questProgressBar.style.setProperty("--progress", "0%");
+    renderTotalSaved();
+    return;
+  }
+
+  const hasSavedDailyQuests = dailyGoals.some((goal) => goal.id);
+  elements.dailyQuests.innerHTML = dailyGoals.map((goal, index) => questCard(goal, index, false, isTomorrow || !hasSavedDailyQuests)).join("");
   elements.weeklyQuests.innerHTML = weeklyGoals.map((goal, index) => questCard(goal, index, true)).join("");
-  bindQuestCompletionEvents();
+  if (!isTomorrow) bindQuestCompletionEvents();
 
   const completed = dailyGoals.filter((goal) => goal.completion).length;
   const total = dailyGoals.length || 1;
@@ -259,7 +455,69 @@ function renderQuests() {
   renderTotalSaved();
 }
 
-function questCard(goal, index, weekly) {
+function toggleDailyQuestDay() {
+  state.dailyQuestDay = state.dailyQuestDay === "today" ? "tomorrow" : "today";
+  renderQuests();
+}
+
+function buildTomorrowDailyGoals(todayGoals) {
+  const templates = {
+    coffee: {
+      title: "Pack Tomorrow's Coffee",
+      reason: "Set up coffee at home tonight so tomorrow starts with an easy win."
+    },
+    eating: {
+      title: "Plan One Packed Meal",
+      reason: "Choose tomorrow's lunch or dinner now so eating out is less tempting."
+    },
+    restaurant: {
+      title: "Plan One Packed Meal",
+      reason: "Choose tomorrow's lunch or dinner now so eating out is less tempting."
+    },
+    transport: {
+      title: "Map a Lower-Cost Trip",
+      reason: "Check tomorrow's route early and choose the cheaper travel option."
+    },
+    travel: {
+      title: "Map a Lower-Cost Trip",
+      reason: "Check tomorrow's route early and choose the cheaper travel option."
+    },
+    shopping: {
+      title: "Wait Before Buying",
+      reason: "Put tomorrow's non-essential purchase on pause and keep the money moving toward savings."
+    },
+    subscription: {
+      title: "Check One Subscription",
+      reason: "Review one recurring payment tomorrow and cancel it if it no longer earns its place."
+    },
+    groceries: {
+      title: "Use What You Have",
+      reason: "Plan tomorrow around food already at home before adding anything new."
+    }
+  };
+
+  return todayGoals.filter((goal) => !String(goal.category || goal.title || "").toLowerCase().includes("subscription")).map((goal, index) => {
+    const text = String(goal.category || goal.title || "").toLowerCase();
+    const templateKey = Object.keys(templates).find((key) => text.includes(key));
+    const template = templates[templateKey] || {
+      title: `Tomorrow's ${goal.category || "Savings"} Win`,
+      reason: "Give tomorrow one clear money-saving choice that still feels realistic."
+    };
+
+    return {
+      ...goal,
+      id: "",
+      title: template.title,
+      reason: template.reason,
+      saving: Math.max(1, Number(goal.saving || 0)),
+      completion: false,
+      tomorrowPreview: true,
+      previewIndex: index
+    };
+  });
+}
+
+function questCard(goal, index, weekly, preview = false) {
   const title = goal.title || goal.name || "Little win";
   const saving = Number(goal.saving || goal.save || 0);
   const category = goal.category || "Savings";
@@ -291,6 +549,8 @@ function questCard(goal, index, weekly) {
       <div class="progress-track" style="--progress:${progressValue}"><span></span></div>
       ${weekly ? `
         <p class="quest-tracker-note">Updates when you finish linked daily quests.</p>
+      ` : preview ? `
+        <p class="quest-tracker-note">${goal.tomorrowPreview ? "Tomorrow preview" : "Run analysis to save this quest"}</p>
       ` : `<label class="quest-completion">
         <input type="checkbox" data-quest-id="${escapeHtml(goal.id || "")}" ${checked} ${disabled}>
         <span>Done?</span>
@@ -340,33 +600,57 @@ function bindQuestCompletionEvents() {
       const questId = checkbox.dataset.questId;
       if (!questId) return;
 
-      checkbox.disabled = true;
+      const quest = findQuestById(questId);
+      const wasComplete = Boolean(quest?.completion);
+      const saving = Number(quest?.saving || 0);
+      const nextCompletion = Boolean(checkbox.checked);
+      const previousTotal = state.totalSavedLittleWins;
+      const delta = nextCompletion === wasComplete ? 0 : nextCompletion ? saving : -saving;
+
+      updateLocalQuestCompletion(questId, nextCompletion);
+      state.totalSavedLittleWins = Math.max(0, state.totalSavedLittleWins + delta);
+      saveTotalSavedLittleWinsToSession();
+      renderQuests();
+      renderTotalSaved();
+
       try {
         const response = await fetch(`/api/quests/${encodeURIComponent(questId)}`, {
           method: "PATCH",
           headers: authHeaders(),
-          body: JSON.stringify({ completion: checkbox.checked })
+          body: JSON.stringify({
+            completion: nextCompletion,
+            previousCompletion: wasComplete,
+            saving,
+            userId: state.session?.user?.id
+          })
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Could not update quest");
-        updateLocalQuestCompletion(questId, Boolean(payload.quest?.completion));
+        updateLocalQuestCompletion(questId, Boolean(payload.quest?.completion ?? nextCompletion));
         if (payload.totalSavedLittleWins !== null && payload.totalSavedLittleWins !== undefined) {
           state.totalSavedLittleWins = Number(payload.totalSavedLittleWins || 0);
-          if (state.session?.user) {
-            state.session.user.Total_saved_littlewins = state.totalSavedLittleWins;
-            localStorage.setItem("little-wins-session", JSON.stringify(state.session));
-          }
         }
+        saveTotalSavedLittleWinsToSession();
         renderQuests();
         renderTotalSaved();
       } catch (error) {
-        checkbox.checked = !checkbox.checked;
+        updateLocalQuestCompletion(questId, wasComplete);
+        state.totalSavedLittleWins = previousTotal;
+        saveTotalSavedLittleWinsToSession();
+        renderQuests();
+        renderTotalSaved();
         setAnalysisStatus(error.message);
-      } finally {
-        checkbox.disabled = false;
       }
     });
   });
+}
+
+function findQuestById(questId) {
+  for (const group of ["daily goals", "weekly goals"]) {
+    const quest = state.analysis?.[group]?.find((item) => String(item.id) === String(questId));
+    if (quest) return quest;
+  }
+  return null;
 }
 
 function updateLocalQuestCompletion(questId, completion) {
@@ -378,6 +662,12 @@ function updateLocalQuestCompletion(questId, completion) {
 
 function renderTotalSaved() {
   elements.totalSaved.textContent = formatMoney(state.totalSavedLittleWins);
+}
+
+function saveTotalSavedLittleWinsToSession() {
+  if (!state.session?.user) return;
+  state.session.user.Total_saved_littlewins = state.totalSavedLittleWins;
+  localStorage.setItem("little-wins-session", JSON.stringify(state.session));
 }
 
 async function analyseSpending() {
@@ -397,11 +687,11 @@ async function analyseSpending() {
     if (!response.ok) throw new Error(payload.error || "Analysis failed");
 
     state.analysis = payload.analysis;
+    state.dailyQuestDay = "today";
     renderQuests();
     renderAnalysis(payload);
     renderTransactions(payload.categorizedTransactions);
     elements.buddyMessage.textContent = "Fresh quests are ready. Tiny choices, real money.";
-    showScreen("quests");
   } catch (error) {
     setAnalysisStatus(error.message);
   } finally {
@@ -463,6 +753,7 @@ function renderAnalysis(payload) {
     <article class="analysis-card">
       <h3>Fresh Quests Ready</h3>
       <p class="muted">I prepared daily and weekly quests that help move extra money toward your savings goal without making the plan feel punishing.</p>
+      <button class="primary-button compact analysis-action" type="button" data-go-to-quests>Go to quests!</button>
     </article>
   `;
 }
@@ -517,6 +808,19 @@ async function saveGoalToApi(goal) {
   }
 }
 
+async function updateGoalInApi(id, goal) {
+  try {
+    const payload = await apiFetch(`/api/user-goals/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: goal
+    });
+    return payload.goal;
+  } catch (error) {
+    setAnalysisStatus(error.message);
+    return null;
+  }
+}
+
 async function deleteGoalFromApi(id) {
   try {
     await apiFetch(`/api/user-goals/${encodeURIComponent(id)}`, {
@@ -529,7 +833,14 @@ async function deleteGoalFromApi(id) {
 
 function renderTransactions(transactions) {
   if (!elements.transactionsList) return;
-  const rows = transactions.slice(0, 12);
+  const rows = [...transactions].sort((left, right) => {
+    const leftTime = transactionTimestamp(left);
+    const rightTime = transactionTimestamp(right);
+    return rightTime - leftTime;
+  });
+
+  renderTransactionsChart(rows);
+
   if (!rows.length) {
     elements.transactionsList.innerHTML = `<article class="transaction-row"><p class="muted">No transactions found yet.</p></article>`;
     return;
@@ -551,6 +862,70 @@ function renderTransactions(transactions) {
       </article>
     `;
   }).join("");
+}
+
+function renderTransactionsChart(transactions) {
+  if (!elements.transactionsChart) return;
+
+  const spendingByCategory = new Map();
+  for (const transaction of transactions) {
+    const amount = Number(transaction.amount ?? transaction.value ?? 0);
+    const category = transaction.category || "Uncategorised";
+    if (amount <= 0 || category.toLowerCase() === "income") continue;
+    spendingByCategory.set(category, (spendingByCategory.get(category) || 0) + amount);
+  }
+
+  const slices = [...spendingByCategory.entries()]
+    .map(([category, amount]) => ({ category, amount }))
+    .sort((left, right) => right.amount - left.amount);
+  const total = slices.reduce((sum, slice) => sum + slice.amount, 0);
+
+  if (!slices.length || total <= 0) {
+    elements.transactionsChart.innerHTML = `
+      <article class="chart-card">
+        <div>
+        <p class="eyebrow">Spending Split</p>
+        <h2>No spending to chart yet</h2>
+        </div>
+        <p class="muted">Transactions will appear here once spending rows are available.</p>
+      </article>
+    `;
+    return;
+  }
+
+  const colors = ["#14696d", "#640031", "#1a237e", "#7b5e00", "#006d3c", "#8b1e3f", "#455a64", "#6a4c93"];
+  elements.transactionsChart.innerHTML = `
+    <article class="chart-card">
+      <div>
+        <p class="eyebrow">Spending Split</p>
+        <h2>Category overview</h2>
+        <p class="muted">${formatMoney(total)} across ${slices.length} categories</p>
+      </div>
+      <div class="bar-chart" aria-label="Transaction spending by category">
+        ${slices.map((slice, index) => {
+          const percent = Math.max(4, Math.round((slice.amount / slices[0].amount) * 100));
+          const share = Math.round((slice.amount / total) * 100);
+          return `
+            <div class="bar-row">
+              <div class="bar-copy">
+                <strong>${escapeHtml(slice.category)}</strong>
+                <span>${formatMoney(slice.amount)} • ${share}%</span>
+              </div>
+              <div class="bar-track">
+                <span style="--bar:${percent}%; --bar-color:${colors[index % colors.length]}"></span>
+              </div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function transactionTimestamp(transaction) {
+  const value = transaction.date || transaction.transaction_date || transaction.created_at || "";
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
 function setAnalysisStatus(message) {
