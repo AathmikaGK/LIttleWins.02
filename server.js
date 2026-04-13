@@ -118,11 +118,28 @@ async function handleRequest(request, response) {
       return sendJson(response, { ok: true });
     }
 
+    if (url.pathname === "/api/transactions/upload" && request.method === "POST") {
+      const authUser = await getAuthenticatedUser(request);
+      const body = await readJson(request);
+      if (!body?.csv) throw new Error("No CSV data provided.");
+      const rows = parseCsv(body.csv);
+      if (!rows.length) throw new Error("No valid transactions found in the CSV.");
+      let transactions;
+      if (config.supabaseUrl && config.supabaseAnonKey) {
+        transactions = await insertTransactions(rows, authUser.id);
+      } else {
+        transactions = rows.map((row, index) => ({ id: `csv-${index}`, ...row }));
+      }
+      return sendJson(response, { transactions, count: transactions.length });
+    }
+
     if (url.pathname === "/api/analyse" && request.method === "POST") {
       const body = await readJson(request);
       const authUser = await getOptionalAuthenticatedUser(request);
       if (authUser?.id) await ensureUserSynced(authUser.id);
-      const transactions = await fetchTransactions();
+      const transactions = Array.isArray(body?.transactions) && body.transactions.length
+        ? body.transactions
+        : await fetchTransactions();
       const result = await analyseTransactions(transactions, body?.goals || []);
       const categorizedTransactions = normalizeCategorizedTransactions(
         transactions,
@@ -130,9 +147,12 @@ async function handleRequest(request, response) {
       );
       const analysis = normalizeAnalysis(result);
 
-      await updateTransactionCategories(categorizedTransactions);
-      const savedQuests = await saveGeneratedQuests(analysis, authUser?.id);
-      attachSavedQuestsToAnalysis(analysis, savedQuests);
+      let savedQuests = [];
+      if (config.supabaseUrl && config.supabaseAnonKey) {
+        await updateTransactionCategories(categorizedTransactions);
+        savedQuests = await saveGeneratedQuests(analysis, authUser?.id);
+        attachSavedQuestsToAnalysis(analysis, savedQuests);
+      }
 
       return sendJson(response, {
         analysis,
@@ -816,6 +836,151 @@ function normalizeQuestSaving(quest, questType) {
   const defaultCap = questType === "weekly" ? 75 : 25;
   const cap = matchedCap || defaultCap;
   return Math.max(0, Math.min(rawSaving, cap));
+}
+
+function parseCsv(csvText) {
+  const lines = csvText.trim().split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length < 2) return [];
+
+  const headerCells = splitCsvLine(lines[0]);
+  const headers = headerCells.map((h) => h.toLowerCase().trim());
+
+  const col = {
+    date: findCsvColumn(headers, ["date", "transaction date", "trans date", "posted date", "value date"]),
+    description: findCsvColumn(headers, ["description", "merchant", "narration", "details", "memo", "payee", "name", "transaction description", "particulars"]),
+    amount: findCsvColumn(headers, ["amount", "value", "total", "net amount"]),
+    debit: findCsvColumn(headers, ["debit", "withdrawal", "money out", "debit amount"]),
+    credit: findCsvColumn(headers, ["credit", "deposit", "money in", "credit amount"]),
+    category: findCsvColumn(headers, ["category", "type", "transaction type", "classification"])
+  };
+
+  if (col.description === -1 && headerCells.length >= 2) col.description = 1;
+  if (col.date === -1 && headerCells.length >= 1) col.date = 0;
+
+  const rows = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const values = splitCsvLine(lines[i]);
+    if (!values.length || values.every((v) => !v.trim())) continue;
+
+    const date = col.date >= 0 ? (values[col.date] || "").trim() : "";
+    const description = col.description >= 0 ? (values[col.description] || "").trim() : "";
+
+    let amount = 0;
+    if (col.amount >= 0) {
+      amount = parseCsvMoney(values[col.amount]);
+    } else if (col.debit >= 0 || col.credit >= 0) {
+      const debit = col.debit >= 0 ? Math.abs(parseCsvMoney(values[col.debit])) : 0;
+      const credit = col.credit >= 0 ? Math.abs(parseCsvMoney(values[col.credit])) : 0;
+      amount = credit > 0 ? credit : -debit;
+    }
+
+    const category = col.category >= 0 ? (values[col.category] || "").trim() : "";
+    if (!description && amount === 0) continue;
+
+    rows.push({
+      date: normalizeCsvDate(date),
+      merchant: description,
+      description,
+      amount,
+      category
+    });
+  }
+
+  return rows;
+}
+
+function splitCsvLine(line) {
+  const cells = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (inQuotes) {
+      if (char === '"') {
+        if (line[i + 1] === '"') {
+          current += '"';
+          i += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        current += char;
+      }
+    } else if (char === '"') {
+      inQuotes = true;
+    } else if (char === ",") {
+      cells.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  cells.push(current);
+  return cells;
+}
+
+function findCsvColumn(headers, names) {
+  for (const name of names) {
+    const index = headers.findIndex((h) => h === name || h.replace(/[_\-]/g, " ") === name);
+    if (index >= 0) return index;
+  }
+  return -1;
+}
+
+function parseCsvMoney(value) {
+  if (!value) return 0;
+  const cleaned = String(value).replace(/[^0-9.\-]/g, "");
+  const number = Number(cleaned);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function normalizeCsvDate(dateStr) {
+  if (!dateStr) return new Date().toISOString().slice(0, 10);
+  const auMatch = dateStr.match(/^(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})$/);
+  if (auMatch) {
+    return `${auMatch[3]}-${auMatch[2].padStart(2, "0")}-${auMatch[1].padStart(2, "0")}`;
+  }
+  const isoMatch = dateStr.match(/^(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2].padStart(2, "0")}-${isoMatch[3].padStart(2, "0")}`;
+  }
+  const parsed = new Date(dateStr);
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+  return new Date().toISOString().slice(0, 10);
+}
+
+async function insertTransactions(rows, userId) {
+  assertSupabaseConfig();
+
+  const rawAppUserId = Number(cleanEnvValue(process.env.APP_USER_ID || ""));
+  const numericUserId = rawAppUserId || 1;
+  const transactions = rows.map((row) => ({
+    ...(numericUserId ? { user_id: numericUserId } : {}),
+    transaction_date: row.date || new Date().toISOString().slice(0, 10),
+    merchant: row.merchant || row.description || "Unknown",
+    amount: Number(row.amount || 0),
+    category: row.category || ""
+  }));
+
+  if (!transactions.length) return [];
+
+  const response = await fetch(`${config.supabaseUrl}/rest/v1/${encodeURIComponent(config.transactionsTable)}`, {
+    method: "POST",
+    headers: {
+      ...supabaseHeaders(),
+      prefer: "return=representation"
+    },
+    body: JSON.stringify(transactions)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase transaction insert failed: ${response.status} ${await response.text()}`);
+  }
+
+  const inserted = await response.json();
+  return inserted.map((t) => normalizeTransactionForClient(t));
 }
 
 function inferCategory(transaction) {

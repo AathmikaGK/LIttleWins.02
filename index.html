@@ -17,7 +17,7 @@
           <span>Little Wins</span>
         </div>
         <div class="auth-buddy">
-          <img class="mascot" src="https://lh3.googleusercontent.com/aida/ADBb0uhEtuWWP-FPuExDrVllz54r03Uqbk_s_SSsXB2Eid4w8UeP-URZS1mN06VYoVHEX6T4AwyiNKgBCtlkEeqZZ0OsmClEUK6TThz4GS_2g5vIJWhsicykQN5svKy5dgvTFdBF3Mix7D13vbUsejkgOduns1_NIPqfNs9CYNRzCZ7sTyBVMbJzqhXECFtsU1yGMSj5UdVwEDbQquedBuPoZfMXLzYtOkvz4-BQYGytnkqpy6wzbiV2m09OJCRfiSKM9b5P8SGJ2BAtO-0" alt="Little Wins robot mascot">
+          <img class="mascot" src="/mascot.svg" alt="Little Wins robot mascot">
           <div>
             <p class="eyebrow">Welcome</p>
             <h1>Set Your Goals</h1>
@@ -80,7 +80,7 @@
           <div class="speech-bubble">
             <p id="buddy-message">Looking healthy. Your savings are growing like a pro.</p>
           </div>
-          <img class="mascot large" src="https://lh3.googleusercontent.com/aida/ADBb0uhEtuWWP-FPuExDrVllz54r03Uqbk_s_SSsXB2Eid4w8UeP-URZS1mN06VYoVHEX6T4AwyiNKgBCtlkEeqZZ0OsmClEUK6TThz4GS_2g5vIJWhsicykQN5svKy5dgvTFdBF3Mix7D13vbUsejkgOduns1_NIPqfNs9CYNRzCZ7sTyBVMbJzqhXECFtsU1yGMSj5UdVwEDbQquedBuPoZfMXLzYtOkvz4-BQYGytnkqpy6wzbiV2m09OJCRfiSKM9b5P8SGJ2BAtO-0" alt="Little Wins robot mascot">
+          <img class="mascot large" src="/mascot.svg" alt="Little Wins robot mascot">
         </section>
 
         <section class="panel">
@@ -190,18 +190,40 @@
       </section>
 
       <section id="transactions-screen" class="screen" aria-labelledby="transactions-title">
-        <section class="panel">
+        <section class="panel csv-upload-panel">
           <div class="section-heading">
             <div>
-              <p class="eyebrow">Supabase</p>
+              <p class="eyebrow">Import</p>
+              <h2>Upload Transactions</h2>
+            </div>
+          </div>
+          <p class="muted">Upload your bank statement CSV to get AI-powered spending analysis, categorisation, and a personalised savings plan based on the 50/30/20 rule.</p>
+          <div class="csv-drop-zone" id="csv-drop-zone">
+            <span class="material-symbols-outlined csv-drop-icon">upload_file</span>
+            <p class="csv-drop-title">Drag & drop your CSV here</p>
+            <p class="muted">or click to browse files</p>
+            <input type="file" id="csv-file-input" accept=".csv" hidden>
+          </div>
+          <div id="csv-upload-status" class="csv-upload-status hidden"></div>
+          <button id="csv-analyse-button" class="primary-button hidden" type="button">
+            <span class="material-symbols-outlined">auto_awesome</span>
+            Analyse & Create Savings Plan
+          </button>
+        </section>
+
+        <section class="panel" id="transactions-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow" id="transactions-eyebrow">Supabase</p>
               <h1 id="transactions-title">Transactions</h1>
+              <p class="muted" id="transactions-subtitle"></p>
             </div>
             <button id="refresh-transactions" class="text-action">Refresh</button>
           </div>
           <div id="transactions-chart" class="transactions-chart"></div>
           <div id="transactions-list" class="transaction-list">
             <article class="transaction-row">
-              <p class="muted">Connect Supabase to preview transaction-table details here.</p>
+              <p class="muted">Upload a CSV or connect Supabase to see your transactions.</p>
             </article>
           </div>
         </section>
@@ -209,7 +231,7 @@
 
       <section id="quests-screen" class="screen" aria-labelledby="quests-title">
         <section class="progress-hero">
-          <img class="mascot hero-mascot" src="https://lh3.googleusercontent.com/aida/ADBb0uhEtuWWP-FPuExDrVllz54r03Uqbk_s_SSsXB2Eid4w8UeP-URZS1mN06VYoVHEX6T4AwyiNKgBCtlkEeqZZ0OsmClEUK6TThz4GS_2g5vIJWhsicykQN5svKy5dgvTFdBF3Mix7D13vbUsejkgOduns1_NIPqfNs9CYNRzCZ7sTyBVMbJzqhXECFtsU1yGMSj5UdVwEDbQquedBuPoZfMXLzYtOkvz4-BQYGytnkqpy6wzbiV2m09OJCRfiSKM9b5P8SGJ2BAtO-0" alt="Little Wins robot mascot">
+          <img class="mascot hero-mascot" src="/mascot.svg" alt="Little Wins robot mascot">
           <p class="hero-label">Total Money Saved</p>
           <strong id="total-saved">$0</strong>
           <div class="progress-row">
@@ -247,7 +269,7 @@
         <h1 id="profile-title">Your Profile</h1>
         <p id="profile-email" class="muted">Signed in</p>
         <section class="profile-card">
-          <img class="mascot" src="https://lh3.googleusercontent.com/aida/ADBb0uhEtuWWP-FPuExDrVllz54r03Uqbk_s_SSsXB2Eid4w8UeP-URZS1mN06VYoVHEX6T4AwyiNKgBCtlkEeqZZ0OsmClEUK6TThz4GS_2g5vIJWhsicykQN5svKy5dgvTFdBF3Mix7D13vbUsejkgOduns1_NIPqfNs9CYNRzCZ7sTyBVMbJzqhXECFtsU1yGMSj5UdVwEDbQquedBuPoZfMXLzYtOkvz4-BQYGytnkqpy6wzbiV2m09OJCRfiSKM9b5P8SGJ2BAtO-0" alt="Little Wins robot mascot">
+          <img class="mascot" src="/mascot.svg" alt="Little Wins robot mascot">
           <p id="profile-message">Ready to help you protect your progress.</p>
         </section>
         <section class="settings-list">

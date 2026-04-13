@@ -15,7 +15,8 @@ const state = {
   totalSavedLittleWins: Number(loadSession()?.user?.Total_saved_littlewins || 0),
   dailyQuestDay: "today",
   editingGoalId: null,
-  analysis: null
+  analysis: null,
+  uploadedTransactions: []
 };
 
 const elements = {
@@ -49,7 +50,15 @@ const elements = {
   questProgressTitle: document.querySelector("#quest-progress-title"),
   questProgressLabel: document.querySelector("#quest-progress-label"),
   questProgressBar: document.querySelector("#quest-progress-bar"),
-  buddyMessage: document.querySelector("#buddy-message")
+  buddyMessage: document.querySelector("#buddy-message"),
+  csvDropZone: document.querySelector("#csv-drop-zone"),
+  csvFileInput: document.querySelector("#csv-file-input"),
+  csvUploadStatus: document.querySelector("#csv-upload-status"),
+  csvAnalyseButton: document.querySelector("#csv-analyse-button"),
+  transactionsPanel: document.querySelector("#transactions-panel"),
+  transactionsEyebrow: document.querySelector("#transactions-eyebrow"),
+  transactionsTitle: document.querySelector("#transactions-title"),
+  transactionsSubtitle: document.querySelector("#transactions-subtitle")
 };
 
 bindEvents();
@@ -115,6 +124,32 @@ function bindEvents() {
   elements.analyseButton.addEventListener("click", analyseSpending);
   elements.refreshTransactions.addEventListener("click", loadTransactions);
   elements.dailyDayToggle.addEventListener("click", toggleDailyQuestDay);
+
+  if (elements.csvDropZone) {
+    elements.csvDropZone.addEventListener("click", () => elements.csvFileInput.click());
+    elements.csvFileInput.addEventListener("change", (event) => {
+      const file = event.target.files[0];
+      if (file) handleCsvFile(file);
+    });
+    elements.csvDropZone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      elements.csvDropZone.classList.add("drag-over");
+    });
+    elements.csvDropZone.addEventListener("dragleave", () => {
+      elements.csvDropZone.classList.remove("drag-over");
+    });
+    elements.csvDropZone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      elements.csvDropZone.classList.remove("drag-over");
+      const file = event.dataTransfer.files[0];
+      if (file && file.name.toLowerCase().endsWith(".csv")) handleCsvFile(file);
+      else setCsvStatus("Please upload a .csv file.", true);
+    });
+  }
+
+  if (elements.csvAnalyseButton) {
+    elements.csvAnalyseButton.addEventListener("click", analyseCsvTransactions);
+  }
   elements.analysisOutput.addEventListener("click", (event) => {
     if (event.target.closest("[data-go-to-quests]")) showScreen("quests", { scrollTop: true });
   });
@@ -796,6 +831,93 @@ function saveTotalSavedLittleWinsToSession() {
   localStorage.setItem("little-wins-session", JSON.stringify(state.session));
 }
 
+async function handleCsvFile(file) {
+  setCsvStatus("Reading CSV...");
+  elements.csvDropZone.classList.add("uploaded");
+  elements.csvAnalyseButton.classList.add("hidden");
+
+  try {
+    const text = await file.text();
+    setCsvStatus("Uploading and parsing transactions...");
+    const payload = await apiFetch("/api/transactions/upload", {
+      method: "POST",
+      body: { csv: text }
+    });
+
+    state.uploadedTransactions = payload.transactions || [];
+    updateTransactionsHeader(file.name, state.uploadedTransactions);
+    renderTransactions(state.uploadedTransactions);
+    setCsvStatus(`${payload.count} transactions imported. Ready to analyse.`);
+    elements.csvAnalyseButton.classList.remove("hidden");
+    elements.csvFileInput.value = "";
+  } catch (error) {
+    setCsvStatus(error.message, true);
+    elements.csvDropZone.classList.remove("uploaded");
+    elements.csvFileInput.value = "";
+  }
+}
+
+function updateTransactionsHeader(fileName, transactions) {
+  const count = transactions.length;
+  const totalSpend = transactions
+    .filter((t) => Number(t.amount || 0) > 0 && (t.category || "").toLowerCase() !== "income")
+    .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+  const totalIncome = transactions
+    .filter((t) => (t.category || "").toLowerCase() === "income")
+    .reduce((sum, t) => sum + Math.abs(Number(t.amount || 0)), 0);
+
+  elements.transactionsEyebrow.textContent = `CSV Import • ${fileName}`;
+  elements.transactionsTitle.textContent = `${count} Transactions`;
+
+  const parts = [];
+  if (totalIncome > 0) parts.push(`${formatMoney(totalIncome)} income`);
+  if (totalSpend > 0) parts.push(`${formatMoney(totalSpend)} spending`);
+  elements.transactionsSubtitle.textContent = parts.length ? parts.join(" • ") : "";
+}
+
+function setCsvStatus(message, isError = false) {
+  elements.csvUploadStatus.classList.remove("hidden");
+  elements.csvUploadStatus.classList.toggle("error", isError);
+  elements.csvUploadStatus.innerHTML = `<span class="material-symbols-outlined">${isError ? "error" : "check_circle"}</span> ${message}`;
+}
+
+async function analyseCsvTransactions() {
+  elements.csvAnalyseButton.disabled = true;
+  elements.csvAnalyseButton.innerHTML = `<span class="button-spinner" aria-hidden="true"></span><span>Analysing spending...</span>`;
+  elements.csvAnalyseButton.classList.add("loading");
+  setAnalyseLoading(true);
+
+  try {
+    const response = await fetch("/api/analyse", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        goals: state.goals.map(({ name, category, target, saved }) => ({ name, category, target, saved })),
+        transactions: state.uploadedTransactions
+      })
+    });
+
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Analysis failed");
+
+    state.analysis = payload.analysis;
+    state.dailyQuestDay = "today";
+    renderQuests();
+    renderAnalysis(payload);
+    renderTransactions(payload.categorizedTransactions);
+    elements.buddyMessage.textContent = "I analysed your transactions and built a savings plan. Check your quests!";
+    setCsvStatus("Analysis complete! Your savings plan and quests are ready on the Dashboard.");
+    showScreen("savings", { scrollTop: true });
+  } catch (error) {
+    setCsvStatus(error.message, true);
+  } finally {
+    elements.csvAnalyseButton.disabled = false;
+    elements.csvAnalyseButton.innerHTML = `<span class="material-symbols-outlined">auto_awesome</span> Analyse & Create Savings Plan`;
+    elements.csvAnalyseButton.classList.remove("loading");
+    setAnalyseLoading(false);
+  }
+}
+
 async function analyseSpending() {
   setAnalyseLoading(true);
   elements.analyseButton.disabled = true;
@@ -856,27 +978,90 @@ function renderAnalysis(payload) {
   const categories = asArray(excessive.categories, []);
   const categoryNames = categories.map((item) => item.category).filter(Boolean);
   const positiveMessage = buildPositiveSpendingMessage(categoryNames);
+  const income = Number(excessive.estimated_income || 0);
+  const needsBudget = Number(excessive.needs_budget || 0);
+  const wantsBudget = Number(excessive.wants_budget || 0);
+  const savingsTarget = Number(excessive.savings_target || 0);
+
+  const needsPercent = income > 0 ? Math.round((needsBudget / income) * 100) : 50;
+  const wantsPercent = income > 0 ? Math.round((wantsBudget / income) * 100) : 30;
+  const savingsPercent = income > 0 ? Math.round((savingsTarget / income) * 100) : 20;
+
   elements.analysisOutput.innerHTML = `
     <article class="analysis-card">
       <p class="eyebrow">Your Money Check-In</p>
       <h3>Small shifts, real progress</h3>
       <p class="muted">${escapeHtml(positiveMessage)}</p>
-      <p class="muted">Your estimated income is ${formatMoney(Number(excessive.estimated_income || 0))}, which puts a healthy 20% savings target around ${formatMoney(Number(excessive.savings_target || 0))}. You do not need a huge reset here, just a few softer boundaries around repeat wants.</p>
-      ${categories.length ? `
-        <div class="analysis-highlights">
-          ${categories.map((item) => `
-            <div class="analysis-highlight">
-              <strong>${escapeHtml(item.category || "Category")}</strong>
-              <span>${formatMoney(Number(item.amount || 0))}</span>
-              <p>${Number(item.unnecessary_transaction_count || 0)} transactions look flexible. ${escapeHtml(item.reason || "This is a good place to trim gently.")}</p>
-            </div>
-          `).join("")}
-        </div>
-      ` : `<p class="muted">Your spending looks nicely balanced from the transactions available. Keep protecting your savings rhythm.</p>`}
     </article>
+    ${income > 0 ? `
+    <article class="analysis-card savings-plan-card">
+      <p class="eyebrow">50 / 30 / 20 Savings Plan</p>
+      <h3>Your Budget Breakdown</h3>
+      <p class="muted">Based on your estimated income of ${formatMoney(income)}, here is how your money should flow each month.</p>
+      <div class="budget-breakdown">
+        <div class="budget-row">
+          <div class="budget-label">
+            <span class="material-symbols-outlined budget-icon needs">home</span>
+            <div>
+              <strong>Needs</strong>
+              <span class="muted">Rent, groceries, utilities, transport</span>
+            </div>
+          </div>
+          <div class="budget-values">
+            <strong>${formatMoney(needsBudget)}</strong>
+            <span class="budget-tag needs">${needsPercent}% of income</span>
+          </div>
+          <div class="budget-bar"><span class="needs" style="--bar:${Math.min(100, needsPercent * 2)}%"></span></div>
+        </div>
+        <div class="budget-row">
+          <div class="budget-label">
+            <span class="material-symbols-outlined budget-icon wants">shopping_bag</span>
+            <div>
+              <strong>Wants</strong>
+              <span class="muted">Coffee, eating out, entertainment</span>
+            </div>
+          </div>
+          <div class="budget-values">
+            <strong>${formatMoney(wantsBudget)}</strong>
+            <span class="budget-tag wants">${wantsPercent}% of income</span>
+          </div>
+          <div class="budget-bar"><span class="wants" style="--bar:${Math.min(100, wantsPercent * 2)}%"></span></div>
+        </div>
+        <div class="budget-row">
+          <div class="budget-label">
+            <span class="material-symbols-outlined budget-icon savings">savings</span>
+            <div>
+              <strong>Savings</strong>
+              <span class="muted">Your 20% target to grow wealth</span>
+            </div>
+          </div>
+          <div class="budget-values">
+            <strong>${formatMoney(savingsTarget)}</strong>
+            <span class="budget-tag savings">${savingsPercent}% of income</span>
+          </div>
+          <div class="budget-bar"><span class="savings" style="--bar:${Math.min(100, savingsPercent * 2)}%"></span></div>
+        </div>
+      </div>
+    </article>
+    ` : ""}
+    ${categories.length ? `
     <article class="analysis-card">
-      <h3>Fresh Quests Ready</h3>
-      <p class="muted">I prepared daily and weekly quests that help move extra money toward your savings goal without making the plan feel punishing.</p>
+      <p class="eyebrow">Where to Trim</p>
+      <h3>Spending you can reduce</h3>
+      <div class="analysis-highlights">
+        ${categories.map((item) => `
+          <div class="analysis-highlight">
+            <strong>${escapeHtml(item.category || "Category")}</strong>
+            <span>${formatMoney(Number(item.amount || 0))}</span>
+            <p>${Number(item.unnecessary_transaction_count || 0)} transactions look flexible. ${escapeHtml(item.reason || "This is a good place to trim gently.")}</p>
+          </div>
+        `).join("")}
+      </div>
+    </article>
+    ` : `<article class="analysis-card"><p class="muted">Your spending looks nicely balanced from the transactions available. Keep protecting your savings rhythm.</p></article>`}
+    <article class="analysis-card">
+      <h3>Daily Quests Ready</h3>
+      <p class="muted">I created achievable daily quests based on your spending habits to help you reach ${formatMoney(savingsTarget)} in savings. Each quest targets a specific habit you can change today.</p>
       <button class="primary-button compact analysis-action" type="button" data-go-to-quests>Go to quests!</button>
     </article>
   `;
@@ -975,14 +1160,19 @@ function renderTransactions(transactions) {
     const category = transaction.category || "Uncategorised";
     const amount = Number(transaction.amount ?? transaction.value ?? 0);
     const date = transaction.date || transaction.transaction_date || transaction.created_at || "";
+    const isIncome = category.toLowerCase() === "income" || amount < 0;
+    const icon = iconForCategory(category);
 
     return `
       <article class="transaction-row">
-        <div>
-          <strong>${escapeHtml(merchant)}</strong>
-          <p class="muted">${escapeHtml(category)}${date ? ` • ${escapeHtml(formatDate(date))}` : ""}</p>
+        <div class="transaction-info">
+          <span class="material-symbols-outlined transaction-icon ${isIncome ? "income" : ""}">${icon}</span>
+          <div>
+            <strong>${escapeHtml(merchant)}</strong>
+            <p class="muted">${escapeHtml(category)}${date ? ` • ${escapeHtml(formatDate(date))}` : ""}</p>
+          </div>
         </div>
-        <span>${formatMoney(amount)}</span>
+        <span class="transaction-amount ${isIncome ? "income" : ""}">${isIncome ? "+" : "-"}${formatMoney(Math.abs(amount))}</span>
       </article>
     `;
   }).join("");
